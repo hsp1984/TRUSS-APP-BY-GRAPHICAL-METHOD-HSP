@@ -6,7 +6,7 @@ import math
 
 # Metadata
 st.set_page_config(page_title="Truss Analysis - Method of Joints", layout="wide")
-st.title("🏗️ Pratt & Howe Truss Analysis: Method of Joints")
+st.title("🏗️ Pratt & Howe Truss Analysis: Method of Joints1")
 st.markdown("---")
 
 # ------------------------------
