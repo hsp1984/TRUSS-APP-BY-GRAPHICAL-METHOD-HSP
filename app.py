@@ -2,13 +2,12 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from io import BytesIO
 import math
 
 # Metadata
-st.set_page_config(page_title="Pratt & Howe Truss Design - IS 800:2007", layout="wide")
-st.title("🏗️ Pratt & Howe Steel Truss Analysis & Design (Graphical Method)")
-st.markdown("#### Developer: Dr. Hiteshkumar Santosh Patil | Modified for Bow's Notation & Maxwell Diagram")
+st.set_page_config(page_title="Truss Analysis - Method of Joints", layout="wide")
+st.title("🏗️ Pratt & Howe Truss Analysis: Method of Joints")
+st.markdown("#### Detailed Joint Equilibrium Checks ($\sum F_x = 0, \sum F_y = 0$)")
 st.markdown("---")
 
 # ------------------------------
@@ -17,25 +16,21 @@ st.markdown("---")
 with st.sidebar:
     st.header("📐 Truss Configuration")
     span = st.number_input("Span of Truss (m)", value=16.0, min_value=5.0, max_value=50.0, step=0.5)
-    
-    truss_type = st.selectbox("Selected Truss Configuration", 
-                              ["Pratt Truss", "Howe Truss"], 
-                              index=0)
-    
+    truss_type = st.selectbox("Selected Truss Configuration", ["Pratt Truss", "Howe Truss"], index=0)
     num_bays = st.slider("Number of bays", 4, 16, 8)
     pitch = st.number_input("Pitch angle (degrees)", value=20.0, min_value=5.0, max_value=45.0, step=1.0)
     
     st.header("⚖️ Loads (kN/m)")
     col1, col2, col3 = st.columns(3)
-    with col1: DL = st.number_input("Dead Load (DL)", value=5.0)
-    with col2: LL = st.number_input("Live Load (LL)", value=3.0)
-    with col3: WL = st.number_input("Wind Load (WL)", value=4.0)
+    with col1: DL = st.number_input("Dead Load (DL)", value=5.0, step=0.5)
+    with col2: LL = st.number_input("Live Load (LL)", value=3.0, step=0.5)
+    with col3: WL = st.number_input("Wind Load (WL)", value=4.0, step=0.5)
     
     st.header("🔩 Steel Properties")
     fy_choice = st.selectbox("Steel Grade", ["Fe 410", "Fe 450", "Fe 550"], index=0)
     fy_MPa = 250 if fy_choice == "Fe 410" else (450 if fy_choice == "Fe 450" else 550)
-    gamma_m0 = 1.10
-    gamma_m1 = 1.25
+    gamma_m0 = st.number_input("Partial Safety Factor (γm0)", value=1.10)
+    gamma_m1 = st.number_input("Partial Safety Factor (γm1)", value=1.25)
 
 # ------------------------------
 # TRUSS GEOMETRY ENGINE
@@ -63,7 +58,7 @@ for i in range(num_bays + 1):
 
 members = []
 def add_member(n1, n2, m_type):
-    if n1 in nodes and n2 in nodes:
+    if n1 in nodes and n2 in nodes and nodes[n1] != nodes[n2]:
         members.append({'nodes': (n1, n2), 'type': m_type})
 
 for i in range(len(bottom_nodes) - 1): add_member(bottom_nodes[i], bottom_nodes[i+1], "Bottom Chord")
@@ -80,16 +75,23 @@ for i in range(num_bays):
         else: add_member(bottom_nodes[i+1], top_nodes[i], "Diagonal")
 
 # ------------------------------
-# MATRIX SOLVER (Analytical base for Graphical scaling)
+# METHOD OF JOINTS SOLVER
 # ------------------------------
 supports = [(bottom_nodes[0], 'x'), (bottom_nodes[0], 'y'), (bottom_nodes[-1], 'y')]
-def solve_forces(v_load, h_load):
+
+def solve_forces_with_reactions(v_load_per_m, h_load_per_m):
     nm = len(members)
-    unknowns = nm + len(supports)
+    ns = len(supports)
+    unknowns = nm + ns
     A, b = [], []
+    
+    node_ext_loads = {node: [0.0, 0.0] for node in nodes} # [Fx, Fy]
+    
     for node in nodes:
         eqx, eqy = [0] * unknowns, [0] * unknowns
         x1, y1 = nodes[node]
+        
+        # Member Components
         for i, m in enumerate(members):
             n1, n2 = m['nodes']
             if node in (n1, n2):
@@ -97,85 +99,106 @@ def solve_forces(v_load, h_load):
                 x2, y2 = nodes[other]
                 L = np.hypot(x2 - x1, y2 - y1)
                 eqx[i], eqy[i] = (x2 - x1) / L, (y2 - y1) / L
-        for j, (n, d) in enumerate(supports):
-            if n == node:
-                if d == 'x': eqx[nm + j] = 1
-                if d == 'y': eqy[nm + j] = 1
-        Fx, Fy = h_load * panel, -v_load * panel
-        mult = 0.5 if (node in [top_nodes[0], top_nodes[-1]]) else 1.0
-        A.extend([eqx, eqy])
-        b.extend([-Fx * mult if node in top_nodes else 0, -Fy * mult if node in top_nodes else 0])
-    sol, _, _, _ = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)
-    return sol[:nm]
-
-f_dl = solve_forces(DL, 0)
-f_ll = solve_forces(LL, 0)
-f_wl = solve_forces(0, -WL)
-comb1 = 1.5 * (f_dl + f_ll)
-comb2 = 1.5 * (f_dl + f_wl)
-comb3 = 1.2 * (f_dl + f_ll + f_wl)
-
-# ------------------------------
-# DESIGN & DATA PROCESSING
-# ------------------------------
-def design_double_angle_section(force_kN, length_m, fy, gamma_m0, gamma_m1):
-    sections = [{"name": "ISA 50x50x6", "area": 1136, "r_min": 15.3}, {"name": "ISA 75x75x6", "area": 1732, "r_min": 23.0}, {"name": "ISA 100x100x8", "area": 3058, "r_min": 30.7}]
-    for sec in sections:
-        if force_kN > 0:
-            if (sec["area"] * fy / gamma_m0) / 1000 >= abs(force_kN): return sec["name"], "Adequate"
+        
+        # Reaction Components
+        for j, (n_sup, d_sup) in enumerate(supports):
+            if n_sup == node:
+                if d_sup == 'x': eqx[nm + j] = 1
+                if d_sup == 'y': eqy[nm + j] = 1
+        
+        # External Loading (Applied at top nodes)
+        if node in top_nodes:
+            mult = 0.5 if (node == top_nodes[0] or node == top_nodes[-1]) else 1.0
+            Fx, Fy = h_load_per_m * panel * mult, -v_load_per_m * panel * mult
+            node_ext_loads[node] = [Fx, Fy]
+            b.extend([-Fx, -Fy])
         else:
-            slend = (length_m * 1000) / sec["r_min"]
-            if slend < 180: return sec["name"], "Adequate"
-    return "Custom Large", "Check"
+            b.extend([0, 0])
+        
+        A.extend([eqx, eqy])
 
+    sol, _, _, _ = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)
+    m_forces = sol[:nm]
+    reactions = sol[nm:]
+    return m_forces, reactions, node_ext_loads
+
+# Solve for combinations
+f_dl, r_dl, ext_dl = solve_forces_with_reactions(DL, 0)
+f_ll, r_ll, ext_ll = solve_forces_with_reactions(LL, 0)
+f_wl, r_wl, ext_wl = solve_forces_with_reactions(0, -WL)
+
+comb1_f, comb1_r = 1.5*(f_dl + f_ll), 1.5*(r_dl + r_ll)
+comb2_f, comb2_r = 1.5*(f_dl + f_wl), 1.5*(r_dl + r_wl)
+comb3_f, comb3_r = 1.2*(f_dl + f_ll + f_wl), 1.2*(r_dl + r_ll + r_wl)
+
+# ------------------------------
+# EQUILIBRIUM CHECK (SUM FX, SUM FY)
+# ------------------------------
+def check_joint_equilibrium_detailed(member_forces, reactions, ext_loads):
+    checks = []
+    for node_id in nodes:
+        x1, y1 = nodes[node_id]
+        fx_sum, fy_sum = 0.0, 0.0
+        
+        # Internal Member Forces
+        for i, m in enumerate(members):
+            n1, n2 = m['nodes']
+            if node_id in (n1, n2):
+                other = n2 if node_id == n1 else n1
+                x2, y2 = nodes[other]
+                L = np.hypot(x2 - x1, y2 - y1)
+                fx_sum += member_forces[i] * (x2 - x1) / L
+                fy_sum += member_forces[i] * (y2 - y1) / L
+        
+        # External Loads
+        fx_sum += ext_loads[node_id][0]
+        fy_sum += ext_loads[node_id][1]
+        
+        # Reaction Forces
+        for j, (n_sup, d_sup) in enumerate(supports):
+            if n_sup == node_id:
+                if d_sup == 'x': fx_sum += reactions[j]
+                if d_sup == 'y': fy_sum += reactions[j]
+
+        checks.append({
+            "Joint": node_id,
+            "ΣFx (kN)": round(fx_sum, 5),
+            "ΣFy (kN)": round(fy_sum, 5),
+            "Status": "✅ OK" if (abs(fx_sum) < 1e-4 and abs(fy_sum) < 1e-4) else "❌ Error"
+        })
+    return pd.DataFrame(checks)
+
+# ------------------------------
+# GUI DISPLAY
+# ------------------------------
+st.header("🔍 Method of Joints: Equilibrium Verification")
+tabs = st.tabs(["1.5(DL+LL)", "1.5(DL+WL)", "1.2(DL+LL+WL)"])
+
+with tabs[0]:
+    st.subheader("Equilibrium Check: Combination 1")
+    st.dataframe(check_joint_equilibrium_detailed(comb1_f, comb1_r, ext_dl), use_container_width=True)
+
+with tabs[1]:
+    st.subheader("Equilibrium Check: Combination 2")
+    st.dataframe(check_joint_equilibrium_detailed(comb2_f, comb2_r, ext_dl), use_container_width=True)
+
+with tabs[2]:
+    st.subheader("Equilibrium Check: Combination 3")
+    st.dataframe(check_joint_equilibrium_detailed(comb3_f, comb3_r, ext_dl), use_container_width=True)
+
+# Final Member Data Table (matching original format)
 final_data = []
 for i in range(len(members)):
-    max_f = max([comb1[i], comb2[i], comb3[i]], key=abs)
+    max_f = max([comb1_f[i], comb2_f[i], comb3_f[i]], key=abs)
     n1, n2 = members[i]['nodes']
     L = np.hypot(nodes[n1][0] - nodes[n2][0], nodes[n1][1] - nodes[n2][1])
-    sec, stat = design_double_angle_section(max_f, L, fy_MPa, gamma_m0, gamma_m1)
-    final_data.append({"Bow's ID": f"M-{i+1}", "Nodes": f"{n1}-{n2}", "Force (kN)": round(max_f, 2), "Nature": "Tension" if max_f > 0 else "Compression", "Section": sec})
+    final_data.append({
+        "Member": f"{n1}-{n2}", 
+        "Type": members[i]['type'], 
+        "Length (m)": round(L, 2), 
+        "Design Force (kN)": round(max_f, 2), 
+        "Nature": "Tension" if max_f > 0 else "Compression"
+    })
 
-# ------------------------------
-# GRAPHICAL METHOD & BOW'S NOTATION VISUALS
-# ------------------------------
-st.subheader("📍 Space Diagram (Bow's Notation)")
-fig_space, ax_space = plt.subplots(figsize=(12, 4))
-for i, m in enumerate(members):
-    n1, n2 = m['nodes']
-    ax_space.plot([nodes[n1][0], nodes[n2][0]], [nodes[n1][1], nodes[n2][1]], 'k-', lw=1)
-    # Label internal spaces (Simplified Bow's)
-    if i < num_bays:
-        ax_space.text(nodes[n1][0] + panel/2, ridge_height/3, str(i+1), color='blue', fontweight='bold')
-
-for i in range(num_bays):
-    ax_space.text(i*panel + panel/2, ridge_height + 0.5, chr(65+i), color='red', fontweight='bold')
-
-ax_space.set_title("Space Diagram: Alphabet (A,B..) = External, Numbers (1,2..) = Internal")
-ax_space.axis('off')
-st.pyplot(fig_space)
-
-st.subheader("📈 Maxwell Diagram (Graphical Force Polygon)")
-st.info("This diagram represents the equilibrium of forces. Each vector length corresponds to the member force magnitude.")
-fig_max, ax_max = plt.subplots(figsize=(6, 6))
-curr_pt = [0, 0]
-scale = 0.05
-for i, f in enumerate(comb1[:15]): # Plotting first 15 for visual clarity
-    angle = math.atan2(nodes[members[i]['nodes'][1]][1] - nodes[members[i]['nodes'][0]][1], 
-                       nodes[members[i]['nodes'][1]][0] - nodes[members[i]['nodes'][0]][0])
-    dx, dy = f * scale * math.cos(angle), f * scale * math.sin(angle)
-    ax_max.arrow(curr_pt[0], curr_pt[1], dx, dy, head_width=0.2, alpha=0.7)
-    ax_max.text(curr_pt[0] + dx/2, curr_pt[1] + dy/2, f"m{i+1}", fontsize=8)
-    curr_pt = [curr_pt[0] + dx, curr_pt[1] + dy]
-
-ax_max.grid(True, linestyle='--', alpha=0.5)
-ax_max.set_title("Maxwell Force Polygon (Scale 1:20)")
-st.pyplot(fig_max)
-
-# ------------------------------
-# FINAL TABLES (REMAINING AS IS)
-# ------------------------------
-st.subheader("📋 Member Force & Design Summary")
-st.table(pd.DataFrame(final_data))
-
-st.success("Analysis Complete: Graphical Method (Maxwell Diagram) synced with Analytical results.")
+st.subheader("📋 Final Member Forces (Summary)")
+st.dataframe(pd.DataFrame(final_data), use_container_width=True)
