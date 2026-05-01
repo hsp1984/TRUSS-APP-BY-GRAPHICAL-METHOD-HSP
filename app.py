@@ -1,4 +1,4 @@
-import streamlit as st
+remove  programme for Truss Load Diagrams of  Dead Load (DL),Live Load (LL),Wind Load (WL) keep remaining things same "import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -201,4 +201,4 @@ for i in range(len(members)):
     })
 
 st.subheader("📋 Final Member Forces (Summary)")
-st.dataframe(pd.DataFrame(final_data), use_container_width=True)
+st.dataframe(pd.DataFrame(final_data), use_container_width=True)"
